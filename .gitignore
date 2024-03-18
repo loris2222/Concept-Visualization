@@ -158,3 +158,12 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+test_images/coco2.jpg:Zone.Identifier
+test_output/web_airplane.n.01.png
+test_output/web_banana.n.02.png
+test_output/web_boat.n.01.png
+test_output/web_building.n.01.png
+test_output/web_person.n.01.png
+test_output/web_person.n.02.png
+test_output/web_vehicle.n.01.png
+coco_explore_maps.ipynb
