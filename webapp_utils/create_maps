@@ -1,0 +1,148 @@
+# Utils for webapp
+import json
+import torch
+import numpy as np
+import seaborn as sns
+from ..generate_heatmap import *
+from ..utils import read_paths
+import random
+from PIL import Image
+
+im_id = 9
+
+def generate_tree_json():
+    multi_father = 0
+    out = {}
+    out["root"] = "entity.n.01"
+    out["nodes"] = []
+    nodes = []
+    for i in range(len(h_list)):
+        map_synset = h_list[i]
+        children = [b for a,b in concept_model.wn_hierarchy.out_edges(map_synset)]
+        father = [a for a,b in concept_model.wn_hierarchy.in_edges(map_synset)]
+        if len(father) > 1:
+            multi_father += 1
+        newel = {}
+        newel["name"] = map_synset.name()
+        newel["definition"] = map_synset.definition()
+        newel["children"] = [x.name() for x in children]
+        newel["father"] = father[0].name() if father else None
+        out["nodes"].append(newel)
+
+    print(f"Found {multi_father} elements with more than one father. Chose the first one.")
+    return json.dumps(out)
+
+# Generate full maps from COCO
+paths_data = read_paths("./release/paths.json")
+COCO_PATH = paths_data["coco_path"]
+BASE_SAVE_PATH = paths_data["maps_save_path"]
+
+with open(COCO_PATH+"/annotations/captions_train2014.json") as f:
+    data = json.loads(f.read())
+
+images = data["images"]
+captions = data["annotations"]
+
+id_images = {}
+file_captions = {}
+for elem in images:
+    id_images[elem["id"]] = elem["file_name"]
+
+for elem in captions:
+    filename = id_images[elem["image_id"]]
+    file_captions[filename] = elem["caption"]
+
+file_captions = [(key, value) for key, value in file_captions.items()]
+
+random.shuffle(file_captions)
+
+img_path = COCO_PATH+"/train2014/"+file_captions[im_id][0]
+print(img_path)
+print(file_captions[im_id][1])
+
+# Generate maps for all synsets
+PAD_IMAGE = False
+
+dict_size = 7080
+pil_im = Image.open(img_path).convert("RGB")
+box_size = 128
+if PAD_IMAGE:
+    pad_opt_image(box_size, noise_image=True)  # Black padding to allow edges in analysis
+stride = 16
+
+size = pil_im.size
+
+v_s = np.zeros([pil_im.size[1], pil_im.size[0], dict_size], dtype=np.float16)
+counts = np.zeros([pil_im.size[1], pil_im.size[0]], dtype=np.int16)  # How many times do we sum in position i,j (to compute average)
+
+for y in range(0, pil_im.size[1]-box_size, stride):
+    for x in range(0, pil_im.size[0]-box_size, stride):
+        current_box_size = box_size
+
+        # At resolution 1
+        similarities = raw_similarity([x,y,current_box_size,current_box_size], verbose=False, crop_mask=True, invert_mask=False, brightness=0.0, blur_sigma=1, noise_image=True, aggregate=False)
+        sorted_all_idx = torch.argsort(torch.argsort(similarities))  # Get ordering that sorts similarities (in ascending order as we want higher similarity for lower ranks)
+        sorted_all_idx = sorted_all_idx/sorted_all_idx.shape[0]
+        v_s[y:y+current_box_size,x:x+current_box_size,:] += sorted_all_idx.cpu().numpy().reshape([1,1,dict_size])
+        #-------------------------------------------
+        counts[y:y+current_box_size,x:x+current_box_size] += 1
+
+        current_box_size = int(box_size/2)
+
+        # At resolution 2
+        similarities = raw_similarity([x,y,current_box_size,current_box_size], verbose=False, crop_mask=True, invert_mask=False, brightness=0.0, blur_sigma=1, noise_image=True, aggregate=False)
+        sorted_all_idx = torch.argsort(torch.argsort(similarities))  # Get ordering that sorts similarities (in ascending order as we want higher similarity for lower ranks)
+        sorted_all_idx = sorted_all_idx/sorted_all_idx.shape[0]
+        v_s[y:y+current_box_size,x:x+current_box_size,:] += sorted_all_idx.cpu().numpy().reshape([1,1,dict_size])
+        #-------------------------------------------
+        counts[y:y+current_box_size,x:x+current_box_size] += 1
+
+    print(f"{y}")
+counts[counts==0] = 1  # When stride is not 1 this could happen on the bottom and right regions due to uneven padding
+v_s /= counts[:,:,np.newaxis]
+
+# Initialize map params
+from nltk.corpus import wordnet as wn
+
+vmin, vmax = np.min(v_s), np.max(v_s)
+
+SAVE_PATH = BASE_SAVE_PATH + f"/im_{im_id}/"
+color_thresh = 225
+# Params for rank similarity
+n_leaves = 91
+rank_cutoff = n_leaves
+rank_gamma = 10
+
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+import os
+
+os.makedirs(SAVE_PATH)
+print(f"saving to: {SAVE_PATH}")
+
+# Compute maps for all synsets and save to file
+for i in range(dict_size):
+    # map_synset = wn.synset("fruit.n.01")
+    map_synset = h_list[i]
+    map_leaves = wordnet_utils.get_subtree_set(concept_model.wn_hierarchy, map_synset)
+    map_leaves = list(map_leaves)
+    map_leaves_idxs = [h_list.index(x) for x in map_leaves]
+    print(f"{i}/{dict_size}: {map_synset.definition()}")
+    map_idx = h_list.index(map_synset)
+    heatmap = np.max(v_s[:, :, map_leaves_idxs], axis=2)
+    heatmap = np.exp(-rank_gamma*((1-heatmap)/1))  # Added for rank
+    heatmap = heatmap[:-stride,:-stride]
+
+    palette = sns.color_palette('inferno', n_colors=256)
+    palette_rgb = [tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) for color in palette.as_hex()]
+
+    heatmap = (heatmap - vmin) / (vmax - vmin)
+    heatmap = (heatmap * 255).astype(np.uint8)
+
+    # Using cmap and take, color heatmap
+    flattened_heatmap = heatmap.flatten()
+    flattened_heatmap[flattened_heatmap<color_thresh] = 0
+    flattened_heatmap[flattened_heatmap>=color_thresh] = (flattened_heatmap[flattened_heatmap>=color_thresh] - color_thresh) * (255/(255-color_thresh))
+    colored_heatmap = np.take(palette_rgb, flattened_heatmap, axis=0)
+    colored_heatmap = colored_heatmap.reshape(heatmap.shape + (3,))
+    colored_heatmap = (colored_heatmap).astype(np.uint8)
+    Image.fromarray(colored_heatmap).save(SAVE_PATH+h_list[i].name().replace("/", "_")+".png")

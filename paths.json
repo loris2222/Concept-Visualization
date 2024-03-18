@@ -1,0 +1,10 @@
+{
+    "base_save_path": "./release/",
+    "imagenet_train_path": ".../ILSVRC/Data/CLS-LOC/train",
+    "original_imagenet_val": ".../ILSVRC/Data/CLS-LOC/val/",
+    "imagenet_val_path": ".../ILSVRC/Data/CLS-LOC/val_folders",
+    "dict_file_path": "./release/textsets/physical_objects.txt",
+    "cub_base_path": ".../CUB_200_2011/",
+    "coco_path": ".../COCO",
+    "maps_save_path": "./release/out_maps"
+  }
